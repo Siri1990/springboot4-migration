@@ -23,8 +23,15 @@ jobs:
 
       - name: Trigger Copilot Agent
         env:
-          GH_TOKEN: ${{ secrets.MIGRATION_PAT }} # Must have 'repo' scope
+          GH_TOKEN: ${{ secrets.MIGRATION_PAT }}
           TARGET_REPO: ${{ inputs.target_repository }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "❌ ERROR: GH_TOKEN is empty! Check your secrets."
+            exit 1
+          else
+            echo "✅ GH_TOKEN is set (length: ${#GH_TOKEN})"
+          fi
         run: |
           # ---------------------------------------------------------
           # 1. Get Repository ID & Copilot Agent ID
