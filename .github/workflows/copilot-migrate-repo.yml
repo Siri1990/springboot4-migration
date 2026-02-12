@@ -32,7 +32,7 @@ jobs:
           else
             echo "✅ GH_TOKEN is set (length: ${#GH_TOKEN})"
           fi
-        run: |
+          
           # ---------------------------------------------------------
           # 1. Get Repository ID & Copilot Agent ID
           # ---------------------------------------------------------
