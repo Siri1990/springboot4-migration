@@ -1,48 +1,92 @@
-name: Copilot Migration Trigger
+name: "🚀 Trigger Copilot Migration"
 
 on:
   workflow_dispatch:
     inputs:
       target_repository:
-        description: 'Target Repository (e.g., org/app-1)'
+        description: 'Target Repository (e.g. org/repo-name)'
         required: true
         type: string
 
 jobs:
-  trigger-copilot-migration:
+  trigger-copilot:
     runs-on: ubuntu-latest
     steps:
       - name: Download Migration Playbook
-        id: fetch-playbook
         run: |
-          # URL to the RAW version of your playbook
+          # 1. Fetch the playbook
           PLAYBOOK_URL="https://raw.githubusercontent.com/Siri1990/springboot4-migration/main/migration-playbook.md"
-          
-          echo "Fetching playbook from: $PLAYBOOK_URL"
-          
-          # Download content to a temp file
           curl -s "$PLAYBOOK_URL" -o migration-task.md
           
-          # Append specific instruction for Copilot to the top
-          sed -i '1i # Migration Task\n@copilot please analyze this repository and apply the following migration plan:\n' migration-task.md
+          # 2. Prepend instructions for Copilot
+          sed -i '1i # Migration Task\n@copilot please analyze this repository and apply the migration plan below.\n' migration-task.md
 
-      - name: Create Issue in Target Repository
+      - name: Trigger Copilot Agent
         env:
-          # REQUIRED: A PAT with 'repo' scope is needed to write to external repositories
-          GH_TOKEN: ${{ secrets.MIGRATION_PAT }}
+          GH_TOKEN: ${{ secrets.MIGRATION_PAT }} # Must have 'repo' scope
+          TARGET_REPO: ${{ inputs.target_repository }}
         run: |
-          REPO="${{ inputs.target_repository }}"
-          echo "Creating migration issue in $REPO..."
+          # ---------------------------------------------------------
+          # 1. Get Repository ID & Copilot Agent ID
+          # ---------------------------------------------------------
+          echo "🔍 Fetching IDs for $TARGET_REPO..."
+          
+          OWNER=$(echo $TARGET_REPO | cut -d'/' -f1)
+          NAME=$(echo $TARGET_REPO | cut -d'/' -f2)
+          
+          IDS_JSON=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) { id }
+              org: organization(login: $owner) {
+                # Find the Copilot bot ID in the organization context
+                member(login: "copilot-swe-agent") { id } 
+              }
+              # Fallback if personal repo or different setup, try searching user
+              copilotUser: user(login: "copilot-swe-agent") { id }
+            }
+          ')
 
-          # Create the issue using GitHub CLI
-          # Note: We use --body-file to safely pass the long markdown content
-          gh issue create \
-            --repo "$REPO" \
-            --title "Maintenance: Migrate to Spring Boot 4 & Java 25" \
-            --body-file migration-task.md \
-            --label "migration" \
-            --label "java-25" 
+          REPO_ID=$(echo "$IDS_JSON" | jq -r '.data.repository.id')
+          # Try org member first, then generic user lookup for the bot
+          COPILOT_ID=$(echo "$IDS_JSON" | jq -r '.data.org.member.id // .data.copilotUser.id')
+          
+          if [ "$REPO_ID" == "null" ]; then echo "❌ Error: Repository not found"; exit 1; fi
+          if [ "$COPILOT_ID" == "null" ]; then echo "❌ Error: Copilot Agent ID not found (is it enabled?)"; exit 1; fi
+
+          echo "✅ Target Repo ID: $REPO_ID"
+          echo "✅ Copilot Agent ID: $COPILOT_ID"
+
+          # ---------------------------------------------------------
+          # 2. Read Playbook Content
+          # ---------------------------------------------------------
+          BODY_CONTENT=$(cat migration-task.md)
+
+          # ---------------------------------------------------------
+          # 3. Create Issue with Agent Assignment (GraphQL)
+          # ---------------------------------------------------------
+          # This mutation explicitly assigns the task to the Copilot Agent
+          
+          gh api graphql \
+            -f repoId="$REPO_ID" \
+            -f agentId="$COPILOT_ID" \
+            -f title="Maintenance: Migrate to Spring Boot 4 & Java 25" \
+            -f body="$BODY_CONTENT" \
+            -f query='
+            mutation CreateAgentIssue($repoId: ID!, $agentId: ID!, $title: String!, $body: String!) {
+              createIssue(input: {
+                repositoryId: $repoId,
+                title: $title,
+                body: $body,
+                assigneeIds: [$agentId],
+                agentAssignment: {
+                  targetRepositoryId: $repoId
+                }
+              }) {
+                issue {
+                  url
+                  number
+                }
+              }
+            }'
             
-          # Note on Assigning @copilot: 
-          # GitHub does not allow assigning issues to the '@copilot' bot user directly via API.
-          # Instead, we mentioned '@copilot' in the body (Step 1) which triggers the notification/context.
+          echo "🚀 Copilot Migration Task Started!"
